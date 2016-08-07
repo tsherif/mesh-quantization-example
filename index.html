@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<!--
+  The MIT License (MIT)
+
+  Copyright (c) 2016 Tarek Sherif
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of
+  this software and associated documentation files (the "Software"), to deal in
+  the Software without restriction, including without limitation the rights to
+  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+  the Software, and to permit persons to whom the Software is furnished to do so,
+  subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+  FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+  IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<html>
+<head>
+    <style>
+        html {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #info {
+            position: absolute;
+            left: 30px;
+            top: 30px;
+            background-color: white;
+            width: 30%;
+            padding: 10px;
+        }
+
+    </style>
+    <script src="gl-matrix.js"></script>
+</head>
+<body>
+<script type="vert/shader" id="vs">
+    attribute vec4 pos;
+    uniform mat4 decode;
+
+    void main() {
+        gl_Position = decode * pos;
+    }
+</script>
+<script type="frag/shader" id="fs">
+    void main() {
+        gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+    }
+</script>
+<div id="info">
+    This a minimal example of vertex attribute quatization.
+    The positions of the triangle on the left are encoded as standard 32-bit floats.
+    The positions of triangle on the right are quantized to 16-bit unsigned ints and
+    decoded on the GPU via a single matrix multiplication. The technique is descriibed
+    <a href="Mesh Geometry Compression for Mobile Graphics">here</a>.
+    Source code is available
+    <a href="">here</a>.
+</div>
+<canvas id="canvas"></canvas>
+<script>
+    var canvas = document.getElementById("canvas");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+
+    var gl = canvas.getContext("webgl");
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    var vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, document.getElementById("vs").text);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(vs));
+    }
+
+    var fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, document.getElementById("fs").text);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(fs));
+    }
+
+    var program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program));
+    }
+
+    gl.useProgram(program);
+
+    var posLocation = gl.getAttribLocation(program, "pos");
+    gl.enableVertexAttribArray(posLocation);
+
+    var decodeLocation = gl.getUniformLocation(program, "decode");
+
+    var translate = mat4.create();
+    var scale = mat4.create();
+
+    // Draw left triangle uncompressed
+    var leftdata = new Float32Array([
+        -1, -0.5, 0,
+        0, -0.5, 0,
+        -0.5, 0.5, 0
+    ]);
+
+    var positions = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positions);
+
+    gl.uniformMatrix4fv(decodeLocation, false, mat4.create());
+    gl.bufferData(gl.ARRAY_BUFFER, leftdata, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(posLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // Draw right triangle quantized
+    var rightdata = new Float32Array([
+        0, -0.5, 0,
+        1, -0.5, 0,
+        0.5, 0.5, 0
+    ]);
+
+    var b = bounds(rightdata);
+    var q = quantize(rightdata, b.min, b.max);
+
+    gl.uniformMatrix4fv(decodeLocation, false, q.decode);
+    gl.bufferData(gl.ARRAY_BUFFER, q.quantized, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(posLocation, 3, gl.UNSIGNED_SHORT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    function bounds(array) {
+        var min = new Float32Array(3);
+        var max = new Float32Array(3);
+        var i;
+
+        min[0] = min[1] = min[2] = Number.MAX_VALUE;
+        max[0] = max[1] = max[2] = -Number.MAX_VALUE;
+
+        for (i = 0; i < array.length; i += 3) {
+            min[0] = Math.min(min[0], array[i + 0]);
+            min[1] = Math.min(min[1], array[i + 1]);
+            min[2] = Math.min(min[2], array[i + 2]);
+            max[0] = Math.max(max[0], array[i + 0]);
+            max[1] = Math.max(max[1], array[i + 1]);
+            max[2] = Math.max(max[2], array[i + 2]);
+        }
+
+        return {
+            min: min,
+            max: max
+        };
+    }
+
+    function quantize(array, min, max) {
+        var quantized = new Uint16Array(array.length);
+        var multiplier = new Float32Array([
+            max[0] !== min[0] ? 65535 / (max[0] - min[0]) : 0,
+            max[1] !== min[1] ? 65535 / (max[1] - min[1]) : 0,
+            max[2] !== min[2] ? 65535 / (max[2] - min[2]) : 0
+        ]);
+        var i;
+
+        for (i = 0; i < array.length; i += 3) {
+            quantized[i    ] = Math.floor((array[i    ] - min[0]) * multiplier[0]);
+            quantized[i + 1] = Math.floor((array[i + 1] - min[1]) * multiplier[1]);
+            quantized[i + 2] = Math.floor((array[i + 2] - min[2]) * multiplier[2]);
+        }
+
+        var decodeMat = new Float32Array(16);
+
+        mat4.identity(translate);
+        mat4.identity(scale);
+        mat4.translate(translate, translate, min);
+        mat4.scale(scale, scale, [
+            (max[0] - min[0]) / 65535,
+            (max[1] - min[1]) / 65535,
+            (max[2] - min[2]) / 65535
+        ]);
+
+        mat4.multiply(decodeMat, translate, scale);
+
+        return {
+            quantized: quantized,
+            decode: decodeMat
+        };
+    }
+
+</script>
+</body>
+</html>
