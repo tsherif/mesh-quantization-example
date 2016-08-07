@@ -1,5 +1,5 @@
-Vertex Attribute Quantization Example
-=====================================
+Mesh Quantization Example
+=========================
 
 This is a minimal example of mesh compression via vertex attribute quantization.
 It simply draws two triangles to the screen, one using standard 32-bit floats to
