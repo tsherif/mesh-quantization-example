@@ -67,11 +67,14 @@
 <div id="info">
     This a minimal example of mesh compression via vertex attribute quatization.
     The positions of the triangle on the left are encoded as standard 32-bit floats.
-    The positions of triangle on the right are quantized to 16-bit unsigned ints and
-    decoded on the GPU via a single matrix multiplication. The technique is descriibed
-    <a href="Mesh Geometry Compression for Mobile Graphics">here</a>.
+    The positions of triangle on the right are
+    <a href="https://github.com/tsherif/mesh-quantization-example/blob/gh-pages/index.html#L175">quantized to 16-bit unsigned ints</a>
+    and
+    <a href="https://github.com/tsherif/mesh-quantization-example/blob/gh-pages/index.html#L59">decoded on the GPU via a single matrix multiplication</a>.
+    The technique is descriibed
+    <a href="https://github.com/KhronosGroup/glTF/blob/master/extensions/Vendor/WEB3D_quantized_attributes/README.md">here</a>.
     Source code is available
-    <a href="">here</a>.
+    <a href="https://github.com/tsherif/mesh-quantization-example">here</a>.
 </div>
 <canvas id="canvas"></canvas>
 <script>
