@@ -1,7 +1,7 @@
 Mesh Quantization Example
 =========================
 
-This is a minimal example of mesh compression via vertex attribute quantization.
+This is a minimal example of mesh compression via vertex attribute quantization (live demo [here](https://tsherif.github.io/mesh-quantization-example/)).
 It simply draws two triangles to the screen, one using standard 32-bit floats to
 encode the positions, and the other with positions [quantized to 16-bit ints](https://github.com/tsherif/mesh-quantization-example/blob/gh-pages/index.html#L178) which
 are then [decoded on the GPU via a single matrix multiplication](https://github.com/tsherif/mesh-quantization-example/blob/gh-pages/index.html#L59).
