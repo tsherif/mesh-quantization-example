@@ -23,7 +23,7 @@
 -->
 <html>
 <head>
-    <title>Mesh Quantization Example</title>
+    <title>Mesh Quantization and Oct-Encoding Example</title>
     <style>
         html {
             width: 100%;
@@ -53,10 +53,10 @@
 </head>
 <body>
 <script type="vert/shader" id="vs">
-    attribute vec4 pos;
-    attribute vec3 norm;
+    attribute vec4 position;
+    attribute vec3 normal;
     uniform mat4 decode;
-    uniform bool encodedNorm;
+    uniform bool octEncoded;
 
     varying vec3 vPos;
     varying vec3 vNormal;
@@ -71,9 +71,9 @@
     }
 
     void main() {
-        vPos = (decode * pos).xyz;
-        vNormal = encodedNorm ? octDecode(norm.xy) : norm;
-        gl_Position = decode * pos;
+        vPos = (decode * position).xyz;
+        vNormal = octEncoded ? octDecode(normal.xy) : normal;
+        gl_Position = decode * position;
     }
 </script>
 <script type="frag/shader" id="fs">
@@ -91,10 +91,10 @@
     <a href="http://cg.postech.ac.kr/research/mesh_comp_mobile/mesh_comp_mobile_conference.pdf">vertex attribute quatization</a> and
     <a href="http://jcgt.org/published/0003/02/01/">oct-encoded normals</a>.
     The positions and normals of the sphere on the left are encoded as standard 32-bit floats.
-    The positions of the sphere on the right are quantized to 16-bit unsigned ints
-    and the normals are oct-encoded. These techniques reduce the size of the mesh from
-    <span id="uncompressed-bytes"></span>kB to <span id="compressed-bytes"></span>kB (<span id="percentage"></span>%).
-    Since the mesh is decoded on the fly on the GPU, the savings will affect transmission time, memory footprint, and GPU bus
+    The positions of the sphere on the right are quantized to a 16-bit unsigned int per component
+    and the normals are oct-encoded into 2 bytes. A total of 8 bytes are used to represent each vertex rather than the standard 24
+    (66% compression).
+    Since the mesh is decoded on-the-fly on the GPU, the savings will affect transmission time, memory footprint, and GPU bus
     usage.
 </div>
 <canvas id="canvas"></canvas>
@@ -137,16 +137,19 @@
 
     gl.useProgram(program);
 
-    var posLocation =  gl.getAttribLocation(program, "pos");
-    var normLocation = gl.getAttribLocation(program, "norm");
+    var positionLocation =  gl.getAttribLocation(program, "position");
+    var normalLocation = gl.getAttribLocation(program, "normal");
 
     var decodeLocation = gl.getUniformLocation(program, "decode");
-    var encodedNormLocation = gl.getUniformLocation(program, "encodedNorm");
+    var octEncodeLocations = gl.getUniformLocation(program, "octEncoded");
 
-    gl.enableVertexAttribArray(posLocation);
-    gl.enableVertexAttribArray(normLocation);
+    gl.enableVertexAttribArray(positionLocation);
+    gl.enableVertexAttribArray(normalLocation);
 
+    /////////////////////////////////////////////////////
     // Draw left sphere uncompressed
+    /////////////////////////////////////////////////////
+
     var leftSphere = createSphere([-0.5, 0, 0], 0.5);
 
     var positionBuffer = gl.createBuffer();
@@ -155,40 +158,45 @@
     gl.uniformMatrix4fv(decodeLocation, false, mat4.create());
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, leftSphere.positions, gl.STATIC_DRAW);
-    gl.vertexAttribPointer(posLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
 
 
-    gl.uniform1i(encodedNormLocation, false);
+    gl.uniform1i(octEncodeLocations, false);
     gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, leftSphere.normals, gl.STATIC_DRAW);
-    gl.vertexAttribPointer(normLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribPointer(normalLocation, 3, gl.FLOAT, false, 0, 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, leftSphere.numVertices);
 
+    /////////////////////////////////////////////////////
     // Draw right sphere with quantized positions
     // and oct-encoded normals.
+    /////////////////////////////////////////////////////
+
     var rightSphere = createSphere([0.5, 0, 0], 0.5);
 
     var b = bounds(rightSphere.positions);
     var q = quantize(rightSphere.positions, b.min, b.max);
 
-    var encodedNorm = octEncode(rightSphere.normals);
-    var decodedNorm = octDecode(encodedNorm);
+    var encodedNormals = octEncode(rightSphere.normals);
 
     gl.uniformMatrix4fv(decodeLocation, false, q.decode);
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, q.quantized, gl.STATIC_DRAW);
-    gl.vertexAttribPointer(posLocation, 3, gl.UNSIGNED_SHORT, false, 0, 0);
+    gl.vertexAttribPointer(positionLocation, 3, gl.UNSIGNED_SHORT, false, 0, 0);
 
-    gl.uniform1i(encodedNormLocation, true);
+    gl.uniform1i(octEncodeLocations, true);
     gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, encodedNorm, gl.STATIC_DRAW);
-    gl.vertexAttribPointer(normLocation, 2, gl.BYTE, true, 0, 0);
+    gl.bufferData(gl.ARRAY_BUFFER, encodedNormals, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(normalLocation, 2, gl.BYTE, true, 0, 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, rightSphere.numVertices);
 
-    displayCompression();
+    ///////////////////////////////////
+    // Encoding Functions
+    ///////////////////////////////////
 
+    // Calculate the bounding box of the mesh
     function bounds(array) {
         var min = new Float32Array(3);
         var max = new Float32Array(3);
@@ -212,6 +220,9 @@
         };
     }
 
+    // Map values along each axis of the bounding box to
+    // unsigned 16-bit ints
+    // http://cg.postech.ac.kr/research/mesh_comp_mobile/mesh_comp_mobile_conference.pdf
     function quantize(array, min, max) {
         var quantized = new Uint16Array(array.length);
         var multiplier = new Float32Array([
@@ -246,148 +257,197 @@
         };
     }
 
+    // Oct-encode array of normals
+    // http://jcgt.org/published/0003/02/01/
     function octEncode(array) {
         var encoded = new Int8Array(array.length * 2 / 3);
+
+        var oct, dec, best, currentCos, bestCos;
 
         var i, ei;
 
         for (i = 0, ei = 0; i < array.length; i += 3, ei += 2) {
-            var x = array[i    ] / (Math.abs(array[i]) + Math.abs(array[i + 1]) + Math.abs(array[i + 2]));
-            var y = array[i + 1] / (Math.abs(array[i]) + Math.abs(array[i + 1]) + Math.abs(array[i + 2]));
 
-            if (array[i + 2] < 0) {
-                var tempx = x;
-                var tempy = y;
-                tempx = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
-                tempy = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
-                x = tempx;
-                y = tempy;
+            // Test various combinations of ceil and floor
+            // to minimize rounding errors
+            best = oct = octEncodeVec3(array, i, "floor", "floor");
+            dec = octDecodeVec2(oct);
+            currentCos = bestCos = dot(array, i, dec);
+
+            oct = octEncodeVec3(array, i, "ceil", "floor");
+            dec = octDecodeVec2(oct);
+            currentCos = dot(array, i, dec);
+
+            if (currentCos > bestCos) {
+                best = oct;
+                bestCos = currentCos;
             }
 
-            encoded[ei    ] = Math.trunc(x * 127.5 + (x < 0 ? -1 : 0));
-            encoded[ei + 1] = Math.trunc(y * 127.5 + (y < 0 ? -1 : 0));
+            oct = octEncodeVec3(array, i, "floor", "ceil");
+            dec = octDecodeVec2(oct);
+            currentCos = dot(array, i, dec);
+
+            if (currentCos > bestCos) {
+                best = oct;
+                bestCos = currentCos;
+            }
+
+            oct = octEncodeVec3(array, i, "ceil", "ceil");
+            dec = octDecodeVec2(oct);
+            currentCos = dot(array, i, dec);
+
+            if (currentCos > bestCos) {
+                best = oct;
+                bestCos = currentCos;
+            }
+
+            encoded[ei    ] = best[0];
+            encoded[ei + 1] = best[1];
         }
 
         return encoded;
     }
 
-    function octDecode(array) {
-        var decoded = new Float32Array(array.length * 3 / 2);
-        var i, di;
+    // Oct-encode single normal vector in 2 bytes
+    function octEncodeVec3(array, i, xfunc, yfunc) {
+        var x = array[i    ] / (Math.abs(array[i]) + Math.abs(array[i + 1]) + Math.abs(array[i + 2]));
+        var y = array[i + 1] / (Math.abs(array[i]) + Math.abs(array[i + 1]) + Math.abs(array[i + 2]));
 
-        for (i = 0, di = 0; i < array.length; i += 2, di += 3) {
-            var x = array[i];
-            var y = array[i+1];
-            var z = 1 - Math.abs(x) - Math.abs(y);
-
-            if (z < 0) {
-                x = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
-                y = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
-            }
-
-            var length = Math.sqrt(x * x + y * y + z * z);
-
-            decoded[di    ] = x / length;
-            decoded[di + 1] = y / length;
-            decoded[di + 2] = z / length;
+        if (array[i + 2] < 0) {
+            var tempx = x;
+            var tempy = y;
+            tempx = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
+            tempy = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
+            x = tempx;
+            y = tempy;
         }
 
-        return decoded;
+        return new Int8Array([
+            Math[xfunc](x * 127.5 + (x < 0 ? -1 : 0)),
+            Math[yfunc](y * 127.5 + (y < 0 ? -1 : 0))
+        ]);
+
     }
 
+    // Decode an oct-encoded normal
+    function octDecodeVec2(oct) {
+        var x = oct[0];
+        var y = oct[1];
+        x /= x < 0 ? 127 : 128;
+        y /= y < 0 ? 127 : 128;
+
+        var z = 1 - Math.abs(x) - Math.abs(y);
+
+        if (z < 0) {
+            x = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
+            y = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
+        }
+
+        var length = Math.sqrt(x * x + y * y + z * z);
+
+        return [
+            x / length,
+            y / length,
+            z / length
+        ];
+    }
+
+    // Dot product of a normal in an array against a candidate decoding
+    function dot(array, i, vec3) {
+        return array[i] * vec3[0] + array[i + 1] * vec3[1] + array[i + 2] * vec3[2];
+    }
+
+    ////////////////////////////////////
+    // Utility Functions
+    ////////////////////////////////////
+
+    // Create position and normal arrays for a sphere.
     function createSphere(center, radius) {
 
-      var long_bands = 30;
-      var lat_bands = 30;
-      var lat_step = Math.PI / lat_bands;
-      var long_step = 2 * Math.PI / long_bands;
-      var num_vertices = long_bands * lat_bands * 6;
-      var lat_angle, long_angle;
-      var positions = new Float32Array(num_vertices * 3);
-      var normals = new Float32Array(num_vertices * 3);
-      var ox = center[0];
-      var oy = center[1];
-      var oz = center[2];
-      var x1, x2, x3, x4,
-          y1, y2,
-          z1, z2, z3, z4;
-      var i, j;
-      var k = 0;
-      var vi, ti;
+        var longBands = 30;
+        var latBands = 30;
+        var latStep = Math.PI / latBands;
+        var longStep = 2 * Math.PI / longBands;
+        var numVertices = longBands * latBands * 6;
+        var latAngle, longAngle;
+        var positions = new Float32Array(numVertices * 3);
+        var normals = new Float32Array(numVertices * 3);
+        var ox = center[0];
+        var oy = center[1];
+        var oz = center[2];
+        var x1, x2, x3, x4,
+            y1, y2,
+            z1, z2, z3, z4;
+        var i, j;
+        var k = 0;
+        var vi, ti;
 
-      for (i = 0; i < lat_bands; i++) {
-        lat_angle = i * lat_step;
-        y1 = Math.cos(lat_angle);
-        y2 = Math.cos(lat_angle + lat_step);
-        for (j = 0; j < long_bands; j++) {
-          long_angle = j * long_step;
-          x1 = Math.sin(lat_angle) * Math.cos(long_angle);
-          x2 = Math.sin(lat_angle) * Math.cos(long_angle + long_step);
-          x3 = Math.sin(lat_angle + lat_step) * Math.cos(long_angle);
-          x4 = Math.sin(lat_angle + lat_step) * Math.cos(long_angle + long_step);
-          z1 = Math.sin(lat_angle) * Math.sin(long_angle);
-          z2 = Math.sin(lat_angle) * Math.sin(long_angle + long_step);
-          z3 = Math.sin(lat_angle + lat_step) * Math.sin(long_angle);
-          z4 = Math.sin(lat_angle + lat_step) * Math.sin(long_angle + long_step);
-          vi = k * 3;
-          ti = k * 2;
+        for (i = 0; i < latBands; i++) {
+            latAngle = i * latStep;
+            y1 = Math.cos(latAngle);
+            y2 = Math.cos(latAngle + latStep);
 
-          positions[vi] = x1 * radius + ox;
-          positions[vi+1] = y1 * radius + oy;
-          positions[vi+2] = z1 * radius + oz;
-          positions[vi+3] = x2 * radius + ox;
-          positions[vi+4] = y1 * radius + oy;
-          positions[vi+5] = z2 * radius + oz;
-          positions[vi+6] = x3 * radius + ox;
-          positions[vi+7] = y2 * radius + oy;
-          positions[vi+8] = z3 * radius + oz;
-          positions[vi+9] = x3 * radius + ox;
-          positions[vi+10] = y2 * radius + oy;
-          positions[vi+11] = z3 * radius + oz;
-          positions[vi+15] = x4 * radius + ox;
-          positions[vi+16] = y2 * radius + oy;
-          positions[vi+17] = z4 * radius + oz;
-          positions[vi+12] = x2 * radius + ox;
-          positions[vi+13] = y1 * radius + oy;
-          positions[vi+14] = z2 * radius + oz;
+            for (j = 0; j < longBands; j++) {
+                longAngle = j * longStep;
+                x1 = Math.sin(latAngle) * Math.cos(longAngle);
+                x2 = Math.sin(latAngle) * Math.cos(longAngle + longStep);
+                x3 = Math.sin(latAngle + latStep) * Math.cos(longAngle);
+                x4 = Math.sin(latAngle + latStep) * Math.cos(longAngle + longStep);
+                z1 = Math.sin(latAngle) * Math.sin(longAngle);
+                z2 = Math.sin(latAngle) * Math.sin(longAngle + longStep);
+                z3 = Math.sin(latAngle + latStep) * Math.sin(longAngle);
+                z4 = Math.sin(latAngle + latStep) * Math.sin(longAngle + longStep);
+                vi = k * 3;
+                ti = k * 2;
 
-          normals[vi] = x1;
-          normals[vi+1] = y1;
-          normals[vi+2] = z1;
-          normals[vi+3] = x2;
-          normals[vi+4] = y1;
-          normals[vi+5] = z2;
-          normals[vi+6] = x3;
-          normals[vi+7] = y2;
-          normals[vi+8] = z3;
-          normals[vi+9] = x3;
-          normals[vi+10] = y2;
-          normals[vi+11] = z3;
-          normals[vi+12] = x2;
-          normals[vi+13] = y1;
-          normals[vi+14] = z2;
-          normals[vi+15] = x4;
-          normals[vi+16] = y2;
-          normals[vi+17] = z4;
+                positions[vi] = x1 * radius + ox;
+                positions[vi+1] = y1 * radius + oy;
+                positions[vi+2] = z1 * radius + oz;
+                positions[vi+3] = x2 * radius + ox;
+                positions[vi+4] = y1 * radius + oy;
+                positions[vi+5] = z2 * radius + oz;
+                positions[vi+6] = x3 * radius + ox;
+                positions[vi+7] = y2 * radius + oy;
+                positions[vi+8] = z3 * radius + oz;
+                positions[vi+9] = x3 * radius + ox;
+                positions[vi+10] = y2 * radius + oy;
+                positions[vi+11] = z3 * radius + oz;
+                positions[vi+15] = x4 * radius + ox;
+                positions[vi+16] = y2 * radius + oy;
+                positions[vi+17] = z4 * radius + oz;
+                positions[vi+12] = x2 * radius + ox;
+                positions[vi+13] = y1 * radius + oy;
+                positions[vi+14] = z2 * radius + oz;
 
-          k += 6;
+                normals[vi] = x1;
+                normals[vi+1] = y1;
+                normals[vi+2] = z1;
+                normals[vi+3] = x2;
+                normals[vi+4] = y1;
+                normals[vi+5] = z2;
+                normals[vi+6] = x3;
+                normals[vi+7] = y2;
+                normals[vi+8] = z3;
+                normals[vi+9] = x3;
+                normals[vi+10] = y2;
+                normals[vi+11] = z3;
+                normals[vi+12] = x2;
+                normals[vi+13] = y1;
+                normals[vi+14] = z2;
+                normals[vi+15] = x4;
+                normals[vi+16] = y2;
+                normals[vi+17] = z4;
+
+                k += 6;
+            }
+
         }
-      }
 
-      return {
-        positions: positions,
-        normals: normals,
-        numVertices: num_vertices
-      };
-    }
-
-    function displayCompression() {
-      var uncompressed = (leftSphere.positions.byteLength + leftSphere.normals.byteLength);
-      var compressed = (q.quantized.byteLength + encodedNorm.byteLength);
-
-      document.getElementById("uncompressed-bytes").innerText = (uncompressed / 1024).toFixed(1);
-      document.getElementById("compressed-bytes").innerText = (compressed / 1024).toFixed(1);
-      document.getElementById("percentage").innerText = Math.floor(100 - (compressed / uncompressed) * 100);
+        return {
+            positions: positions,
+            normals: normals,
+            numVertices: numVertices
+        };
     }
 
 </script>
