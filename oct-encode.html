@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<!--
+  The MIT License (MIT)
+
+  Copyright (c) 2016 Tarek Sherif
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of
+  this software and associated documentation files (the "Software"), to deal in
+  the Software without restriction, including without limitation the rights to
+  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+  the Software, and to permit persons to whom the Software is furnished to do so,
+  subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+  FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+  IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<html>
+<head>
+    <title>Mesh Quantization Example</title>
+    <style>
+        html {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #info {
+            position: absolute;
+            left: 30px;
+            top: 30px;
+            background-color: white;
+            width: 50%;
+            padding: 10px;
+        }
+
+    </style>
+    <script src="gl-matrix.js"></script>
+</head>
+<body>
+<script type="vert/shader" id="vs">
+    attribute vec4 pos;
+    attribute vec3 norm;
+    uniform mat4 decode;
+    uniform bool encodedNorm;
+
+    varying vec3 vPos;
+    varying vec3 vNormal;
+
+
+    vec3 octDecode(vec2 oct) {
+        vec3 v = vec3(oct.xy, 1.0 - abs(oct.x) - abs(oct.y));
+        if (v.z < 0.0) {
+            v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
+        }
+        return normalize(v);
+    }
+
+    void main() {
+        vPos = (decode * pos).xyz;
+        vNormal = encodedNorm ? octDecode(norm.xy) : norm;
+        gl_Position = decode * pos;
+    }
+</script>
+<script type="frag/shader" id="fs">
+    precision highp float;
+
+    varying vec3 vPos;
+    varying vec3 vNormal;
+
+    void main() {
+        gl_FragColor = vec4(normalize(vNormal) * vec3(1.0, 1.0, -1.0), 1.0);
+    }
+</script>
+<div id="info">
+    This is a minimal example of mesh compression via
+    <a href="http://cg.postech.ac.kr/research/mesh_comp_mobile/mesh_comp_mobile_conference.pdf">vertex attribute quatization</a> and
+    <a href="http://jcgt.org/published/0003/02/01/">oct-encoded normals</a>.
+    The positions and normals of the sphere on the left are encoded as standard 32-bit floats.
+    The positions of the sphere on the right are quantized to 16-bit unsigned ints
+    and the normals are oct-encoded. These techniques reduce the size of the mesh from
+    <span id="uncompressed-bytes"></span>kB to <span id="compressed-bytes"></span>kB (<span id="percentage"></span>%).
+    Since the mesh is decoded on the fly on the GPU, the savings will affect transmission time, memory footprint, and GPU bus
+    usage.
+</div>
+<canvas id="canvas"></canvas>
+<script>
+    var canvas = document.getElementById("canvas");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    var translate = mat4.create();
+    var scale = mat4.create();
+
+    var gl = canvas.getContext("webgl");
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    var vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, document.getElementById("vs").text);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(vs));
+    }
+
+    var fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, document.getElementById("fs").text);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(fs));
+    }
+
+    var program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program));
+    }
+
+    gl.useProgram(program);
+
+    var posLocation =  gl.getAttribLocation(program, "pos");
+    var normLocation = gl.getAttribLocation(program, "norm");
+
+    var decodeLocation = gl.getUniformLocation(program, "decode");
+    var encodedNormLocation = gl.getUniformLocation(program, "encodedNorm");
+
+    gl.enableVertexAttribArray(posLocation);
+    gl.enableVertexAttribArray(normLocation);
+
+    // Draw left sphere uncompressed
+    var leftSphere = createSphere([-0.5, 0, 0], 0.5);
+
+    var positionBuffer = gl.createBuffer();
+    var normalBuffer = gl.createBuffer();
+
+    gl.uniformMatrix4fv(decodeLocation, false, mat4.create());
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, leftSphere.positions, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(posLocation, 3, gl.FLOAT, false, 0, 0);
+
+
+    gl.uniform1i(encodedNormLocation, false);
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, leftSphere.normals, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(normLocation, 3, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, leftSphere.numVertices);
+
+    // Draw right sphere with quantized positions
+    // and oct-encoded normals.
+    var rightSphere = createSphere([0.5, 0, 0], 0.5);
+
+    var b = bounds(rightSphere.positions);
+    var q = quantize(rightSphere.positions, b.min, b.max);
+
+    var encodedNorm = octEncode(rightSphere.normals);
+    var decodedNorm = octDecode(encodedNorm);
+
+    gl.uniformMatrix4fv(decodeLocation, false, q.decode);
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, q.quantized, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(posLocation, 3, gl.UNSIGNED_SHORT, false, 0, 0);
+
+    gl.uniform1i(encodedNormLocation, true);
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, encodedNorm, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(normLocation, 2, gl.BYTE, true, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, rightSphere.numVertices);
+
+    displayCompression();
+
+    function bounds(array) {
+        var min = new Float32Array(3);
+        var max = new Float32Array(3);
+        var i;
+
+        min[0] = min[1] = min[2] = Number.MAX_VALUE;
+        max[0] = max[1] = max[2] = -Number.MAX_VALUE;
+
+        for (i = 0; i < array.length; i += 3) {
+            min[0] = Math.min(min[0], array[i + 0]);
+            min[1] = Math.min(min[1], array[i + 1]);
+            min[2] = Math.min(min[2], array[i + 2]);
+            max[0] = Math.max(max[0], array[i + 0]);
+            max[1] = Math.max(max[1], array[i + 1]);
+            max[2] = Math.max(max[2], array[i + 2]);
+        }
+
+        return {
+            min: min,
+            max: max
+        };
+    }
+
+    function quantize(array, min, max) {
+        var quantized = new Uint16Array(array.length);
+        var multiplier = new Float32Array([
+            max[0] !== min[0] ? 65535 / (max[0] - min[0]) : 0,
+            max[1] !== min[1] ? 65535 / (max[1] - min[1]) : 0,
+            max[2] !== min[2] ? 65535 / (max[2] - min[2]) : 0
+        ]);
+        var i;
+
+        for (i = 0; i < array.length; i += 3) {
+            quantized[i    ] = Math.floor((array[i    ] - min[0]) * multiplier[0]);
+            quantized[i + 1] = Math.floor((array[i + 1] - min[1]) * multiplier[1]);
+            quantized[i + 2] = Math.floor((array[i + 2] - min[2]) * multiplier[2]);
+        }
+
+        var decodeMat = new Float32Array(16);
+
+        mat4.identity(translate);
+        mat4.identity(scale);
+        mat4.translate(translate, translate, min);
+        mat4.scale(scale, scale, [
+            (max[0] - min[0]) / 65535,
+            (max[1] - min[1]) / 65535,
+            (max[2] - min[2]) / 65535
+        ]);
+
+        mat4.multiply(decodeMat, translate, scale);
+
+        return {
+            quantized: quantized,
+            decode: decodeMat
+        };
+    }
+
+    function octEncode(array) {
+        var encoded = new Int8Array(array.length * 2 / 3);
+
+        var i, ei;
+
+        for (i = 0, ei = 0; i < array.length; i += 3, ei += 2) {
+            var x = array[i    ] / (Math.abs(array[i]) + Math.abs(array[i + 1]) + Math.abs(array[i + 2]));
+            var y = array[i + 1] / (Math.abs(array[i]) + Math.abs(array[i + 1]) + Math.abs(array[i + 2]));
+
+            if (array[i + 2] < 0) {
+                var tempx = x;
+                var tempy = y;
+                tempx = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
+                tempy = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
+                x = tempx;
+                y = tempy;
+            }
+
+            encoded[ei    ] = Math.trunc(x * 127.5 + (x < 0 ? -1 : 0));
+            encoded[ei + 1] = Math.trunc(y * 127.5 + (y < 0 ? -1 : 0));
+        }
+
+        return encoded;
+    }
+
+    function octDecode(array) {
+        var decoded = new Float32Array(array.length * 3 / 2);
+        var i, di;
+
+        for (i = 0, di = 0; i < array.length; i += 2, di += 3) {
+            var x = array[i];
+            var y = array[i+1];
+            var z = 1 - Math.abs(x) - Math.abs(y);
+
+            if (z < 0) {
+                x = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
+                y = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
+            }
+
+            var length = Math.sqrt(x * x + y * y + z * z);
+
+            decoded[di    ] = x / length;
+            decoded[di + 1] = y / length;
+            decoded[di + 2] = z / length;
+        }
+
+        return decoded;
+    }
+
+    function createSphere(center, radius) {
+
+      var long_bands = 30;
+      var lat_bands = 30;
+      var lat_step = Math.PI / lat_bands;
+      var long_step = 2 * Math.PI / long_bands;
+      var num_vertices = long_bands * lat_bands * 6;
+      var lat_angle, long_angle;
+      var positions = new Float32Array(num_vertices * 3);
+      var normals = new Float32Array(num_vertices * 3);
+      var ox = center[0];
+      var oy = center[1];
+      var oz = center[2];
+      var x1, x2, x3, x4,
+          y1, y2,
+          z1, z2, z3, z4;
+      var i, j;
+      var k = 0;
+      var vi, ti;
+
+      for (i = 0; i < lat_bands; i++) {
+        lat_angle = i * lat_step;
+        y1 = Math.cos(lat_angle);
+        y2 = Math.cos(lat_angle + lat_step);
+        for (j = 0; j < long_bands; j++) {
+          long_angle = j * long_step;
+          x1 = Math.sin(lat_angle) * Math.cos(long_angle);
+          x2 = Math.sin(lat_angle) * Math.cos(long_angle + long_step);
+          x3 = Math.sin(lat_angle + lat_step) * Math.cos(long_angle);
+          x4 = Math.sin(lat_angle + lat_step) * Math.cos(long_angle + long_step);
+          z1 = Math.sin(lat_angle) * Math.sin(long_angle);
+          z2 = Math.sin(lat_angle) * Math.sin(long_angle + long_step);
+          z3 = Math.sin(lat_angle + lat_step) * Math.sin(long_angle);
+          z4 = Math.sin(lat_angle + lat_step) * Math.sin(long_angle + long_step);
+          vi = k * 3;
+          ti = k * 2;
+
+          positions[vi] = x1 * radius + ox;
+          positions[vi+1] = y1 * radius + oy;
+          positions[vi+2] = z1 * radius + oz;
+          positions[vi+3] = x2 * radius + ox;
+          positions[vi+4] = y1 * radius + oy;
+          positions[vi+5] = z2 * radius + oz;
+          positions[vi+6] = x3 * radius + ox;
+          positions[vi+7] = y2 * radius + oy;
+          positions[vi+8] = z3 * radius + oz;
+          positions[vi+9] = x3 * radius + ox;
+          positions[vi+10] = y2 * radius + oy;
+          positions[vi+11] = z3 * radius + oz;
+          positions[vi+15] = x4 * radius + ox;
+          positions[vi+16] = y2 * radius + oy;
+          positions[vi+17] = z4 * radius + oz;
+          positions[vi+12] = x2 * radius + ox;
+          positions[vi+13] = y1 * radius + oy;
+          positions[vi+14] = z2 * radius + oz;
+
+          normals[vi] = x1;
+          normals[vi+1] = y1;
+          normals[vi+2] = z1;
+          normals[vi+3] = x2;
+          normals[vi+4] = y1;
+          normals[vi+5] = z2;
+          normals[vi+6] = x3;
+          normals[vi+7] = y2;
+          normals[vi+8] = z3;
+          normals[vi+9] = x3;
+          normals[vi+10] = y2;
+          normals[vi+11] = z3;
+          normals[vi+12] = x2;
+          normals[vi+13] = y1;
+          normals[vi+14] = z2;
+          normals[vi+15] = x4;
+          normals[vi+16] = y2;
+          normals[vi+17] = z4;
+
+          k += 6;
+        }
+      }
+
+      return {
+        positions: positions,
+        normals: normals,
+        numVertices: num_vertices
+      };
+    }
+
+    function displayCompression() {
+      var uncompressed = (leftSphere.positions.byteLength + leftSphere.normals.byteLength);
+      var compressed = (q.quantized.byteLength + encodedNorm.byteLength);
+
+      document.getElementById("uncompressed-bytes").innerText = (uncompressed / 1024).toFixed(1);
+      document.getElementById("compressed-bytes").innerText = (compressed / 1024).toFixed(1);
+      document.getElementById("percentage").innerText = Math.floor(100 - (compressed / uncompressed) * 100);
+    }
+
+</script>
+</body>
+</html>
